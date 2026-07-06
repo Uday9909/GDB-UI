@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import logging
+import secrets
 import gevent
 from gevent.event import Event
 from pygdbmi.gdbcontroller import GdbController
@@ -89,6 +90,7 @@ class SessionManager:
                 self._end_session_if_expired(sid)
 
     def _end_session_if_expired(self, session_id):
+        self.stop_reader(session_id)
         with self.lock:
             session = self.sessions.get(session_id)
             if session is None:
@@ -106,6 +108,15 @@ class SessionManager:
             shutil.rmtree(os.path.join('output', session_id), ignore_errors=True)
             logger.info("Expired session cleaned up: %s", session_id)
 
+    def _emit_session_expired(self, session_id):
+        try:
+            from main import socketio
+            socketio.emit('session_expired', {
+                'reason': 'Session expired or ended',
+            }, room=session_id, namespace='/ws/debug')
+        except Exception as e:
+            logger.warning("Failed to emit session_expired for %s: %s", session_id, e)
+
     def _reader_loop(self, session_id):
         """Poll GDB output and emit to the session WebSocket room."""
         stop_event = self.reader_stop_events.get(session_id)
@@ -113,10 +124,19 @@ class SessionManager:
             return
 
         while not stop_event.is_set():
-            session_lock = self._get_session_lock(session_id)
+            try:
+                session_lock = self._get_session_lock(session_id)
+            except RuntimeError:
+                # Session was removed externally (expired or ended)
+                self._emit_session_expired(session_id)
+                break
+
             with session_lock:
                 session = self.sessions.get(session_id)
-                if not session or not session.get('controller'):
+                if not session:
+                    self._emit_session_expired(session_id)
+                    break
+                if not session.get('controller'):
                     break
                 controller = session['controller']
 
@@ -215,7 +235,10 @@ class SessionManager:
             session = self.sessions.get(session_id)
             if session is None:
                 return False
-            return session.get('ws_token') == ws_token
+            expected = session.get('ws_token')
+            if expected is None:
+                return False
+            return secrets.compare_digest(expected, ws_token)
 
     def _get_session(self, session_id):
         with self.lock:
@@ -310,7 +333,12 @@ class SessionManager:
                 session['last_active'] = time.time()
 
     def _parse_response(self, raw_response: str):
-        """Catch pygdbmi parse errors and return a structured payload instead of crashing."""
+        """Catch pygdbmi parse errors and return a structured payload.
+
+        When GDB is in a bad state (infinite loop, segfault during execution),
+        pygdbmi returns malformed MI tokens. This wrapper catches parse errors
+        and returns a structured error payload without crashing the session.
+        """
         try:
             return gdbmiparser.parse_response(raw_response)
         except Exception as e:
