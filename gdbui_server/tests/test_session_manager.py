@@ -278,5 +278,101 @@ class TestSessionManager(unittest.TestCase):
         self.assertEqual(normalize_program_name('test'), 'test')
 
 
+class TestSessionManagerSandbox(unittest.TestCase):
+    """Sandbox-enabled behavior: GDB runs inside a per-session Docker container."""
+
+    def _make_mock_controller(self):
+        controller = MagicMock()
+        controller.write.return_value = [{'payload': 'mock output'}]
+        controller.exit.return_value = None
+        return controller
+
+    @patch('session_manager.SANDBOX_ENABLED', True)
+    @patch('session_manager.start_container', return_value='gdbui-abc12345')
+    @patch('session_manager.stop_container')
+    @patch('session_manager.os.path.exists', return_value=True)
+    @patch('session_manager.GdbController')
+    def test_start_gdb_uses_docker_exec(self, MockGdbController, mock_exists,
+                                        mock_stop, mock_start):
+        mock_controller = self._make_mock_controller()
+        MockGdbController.return_value = mock_controller
+
+        sm = SessionManager()
+        sid, _ = sm.create_session()
+        sm.start_gdb(sid, 'program')
+
+        mock_start.assert_called_once_with(sid, os.path.join('output', sid))
+        MockGdbController.assert_called_once_with(
+            command=['docker', 'exec', '-i', 'gdbui-abc12345', 'gdb', '--interpreter=mi2'])
+        mock_controller.write.assert_called_once_with(
+            '-file-exec-and-symbols /workspace/program.exe', timeout_sec=30)
+        sm.shutdown()
+
+    @patch('session_manager.SANDBOX_ENABLED', True)
+    @patch('session_manager.start_container', return_value='gdbui-abc12345')
+    @patch('session_manager.os.path.exists', return_value=True)
+    @patch('session_manager.GdbController')
+    def test_end_session_stops_container(self, MockGdbController, mock_exists, mock_start):
+        mock_controller = self._make_mock_controller()
+        MockGdbController.return_value = mock_controller
+
+        sm = SessionManager()
+        sid, _ = sm.create_session()
+        sm.start_gdb(sid, 'program')
+
+        with patch('session_manager.stop_container') as mock_stop:
+            sm.end_session(sid)
+            mock_stop.assert_called_once_with(sid)
+
+    @patch('session_manager.SANDBOX_ENABLED', True)
+    @patch('session_manager.start_container', return_value='gdbui-abc12345')
+    @patch('session_manager.os.path.exists', return_value=True)
+    @patch('session_manager.GdbController')
+    def test_stop_gdb_stops_container(self, MockGdbController, mock_exists, mock_start):
+        mock_controller = self._make_mock_controller()
+        MockGdbController.return_value = mock_controller
+
+        sm = SessionManager()
+        sid, _ = sm.create_session()
+        sm.start_gdb(sid, 'program')
+
+        with patch('session_manager.stop_container') as mock_stop:
+            sm.stop_gdb(sid)
+            mock_stop.assert_called_once_with(sid)
+
+    @patch('session_manager.SANDBOX_ENABLED', True)
+    @patch('session_manager.start_container', return_value=None)
+    @patch('session_manager.stop_container')
+    @patch('session_manager.os.path.exists', return_value=True)
+    @patch('session_manager.GdbController')
+    def test_start_gdb_fails_closed_when_container_unavailable(self, MockGdbController,
+                                                               mock_exists, mock_stop, mock_start):
+        sm = SessionManager()
+        sid, _ = sm.create_session()
+        with self.assertRaises(RuntimeError):
+            sm.start_gdb(sid, 'program')
+        MockGdbController.assert_not_called()
+        sm.shutdown()
+
+    @patch('session_manager.SANDBOX_ENABLED', True)
+    @patch('session_manager.start_container', return_value='gdbui-abc12345')
+    @patch('session_manager.stop_container')
+    @patch('session_manager.os.path.exists', return_value=True)
+    @patch('session_manager.GdbController')
+    def test_program_switch_stops_container_before_restart(self, MockGdbController,
+                                                           mock_exists, mock_stop, mock_start):
+        controllers = [self._make_mock_controller(), self._make_mock_controller()]
+        MockGdbController.side_effect = controllers
+
+        sm = SessionManager()
+        sid, _ = sm.create_session()
+        sm.start_gdb(sid, 'program_a')
+        sm.start_gdb(sid, 'program_b')
+
+        self.assertEqual(mock_stop.call_count, 1)
+        self.assertEqual(mock_start.call_count, 2)
+        sm.shutdown()
+
+
 if __name__ == '__main__':
     unittest.main()
