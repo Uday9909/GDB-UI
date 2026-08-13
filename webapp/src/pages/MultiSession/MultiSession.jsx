@@ -67,7 +67,7 @@ const DebugPanel = ({ label }) => {
     }, [createSession, endSession]);
 
     useEffect(() => {
-        logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        logsEndRef.current?.scrollIntoView?.({ behavior: "smooth" });
     }, [logs]);
 
     const handleResetSession = async () => {
