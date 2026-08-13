@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 from session_manager import SessionManager, ensure_exe_extension, sanitize_program_name
+from sandbox import SANDBOX_ENABLED, start_container
 import subprocess
 import os
 import atexit
@@ -293,8 +294,20 @@ def compile_code():
     # Phase 2: Compilation OUTSIDE lock (I/O bound, do not block session)
     try:
         try:
+            if SANDBOX_ENABLED:
+                container_name = start_container(session_id, output_dir)
+                if container_name is None:
+                    raise RuntimeError("Sandbox container failed to start; compilation refused")
+                compile_cmd = [
+                    'docker', 'exec', '-i', container_name,
+                    'g++', '-g', '-O0',
+                    f'/workspace/{safe_name}',
+                    '-o', f'/workspace/{ensure_exe_extension(binary_name)}'
+                ]
+            else:
+                compile_cmd = ['g++', '-g', '-O0', source_path, '-o', binary_path]
             result = subprocess.run(
-                ['g++', '-g', '-O0', source_path, '-o', binary_path],
+                compile_cmd,
                 capture_output=True,
                 text=True,
                 timeout=30

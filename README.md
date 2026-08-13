@@ -362,7 +362,17 @@ GDB-UI implements robust multi-user isolation to support multiple concurrent use
 - **Compiling Safely**: When compilation (`/compile`) or file upload (`/upload_file`) is requested, the server locks the session, checks if a debug session is active, and if so, blocks compilation and returns `409 Conflict`. Otherwise, it writes the file and runs the compiler cleanly, updating the program state.
 - **Error Resilience**: Malformed GDB Machine Interface (MI) tokens are caught by the `_parse_response` wrapper inside `SessionManager`, returning structured error payloads to the client without terminating the debug session.
 
+### Sandbox Mode (Docker)
+
+For deployments running untrusted code, GDB-UI can execute **both compilation and debugging inside a per-session Docker container** instead of on the host. This closes the `call system("rm -rf /")` expression-injection hole described below: even a malicious expression only runs inside an isolated container.
+
+- **Off by default**: opt-in via the `GDBUI_DOCKER=true` environment variable on the server (default `false`). When disabled, behavior is unchanged from above.
+- **Build the image**: `docker compose --profile build build sandbox-image`
+- **What's isolated**: each session gets a container with `--read-only` rootfs, `--network none`, and a `--tmpfs /tmp` scratch area. `g++` (compile) and `gdb` (debug) are invoked via `docker exec`. The session's `output/{session_id}/` directory is bind-mounted at `/workspace`, so compiled binaries are immediately available to GDB.
+- **Docker-outside-of-Docker**: the server container mounts `/var/run/docker.sock` to manage sandbox containers.
+- **Fail-closed**: if the sandbox container cannot be started while `GDBUI_DOCKER=true`, compilation and debugging are refused rather than silently running on the host.
+
 ### Known Limitations
 
-- **BLOCKED_COMMANDS is not sufficient against expression injection**: The `BLOCKED_COMMANDS` set blocks shell-level commands (`shell`, `python`, `!`, etc.) but does NOT prevent malicious expressions from executing through GDB's expression evaluator. For example, `call system("rm -rf /")` is a valid GDB MI expression that bypasses the command-level blocklist. Full sandboxing requires Phase 3 Docker container isolation.
+- **BLOCKED_COMMANDS is not sufficient against expression injection**: The `BLOCKED_COMMANDS` set blocks shell-level commands (`shell`, `python`, `!`, etc.) but does NOT prevent malicious expressions from executing through GDB's expression evaluator. For example, `call system("rm -rf /")` is a valid GDB MI expression that bypasses the command-level blocklist. Mitigation: enable [Sandbox Mode](#sandbox-mode-docker) so such expressions run inside an isolated container.
 - **Session ID as sole auth token**: The `session_id` UUID is the only authorization mechanism. This is acceptable for local or trusted-network deployments. Public internet exposure would require additional authentication (signed tokens, user accounts, or HTTPS + HttpOnly cookies).
