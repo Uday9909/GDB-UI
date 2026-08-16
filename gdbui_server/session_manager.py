@@ -10,6 +10,7 @@ import gevent
 from gevent.event import Event
 from pygdbmi.gdbcontroller import GdbController
 import pygdbmi.gdbmiparser as gdbmiparser
+from sandbox import SANDBOX_ENABLED, start_container, stop_container
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,7 @@ class SessionManager:
             except Exception as e:
                 logger.warning("Failed to exit controller for expired session %s: %s", session_id, e)
         if session:
+            stop_container(session_id)
             shutil.rmtree(os.path.join('output', session_id), ignore_errors=True)
             logger.info("Expired session cleaned up: %s", session_id)
 
@@ -267,6 +269,7 @@ class SessionManager:
                 session['controller'].exit()
             except Exception as e:
                 logger.warning("Failed to exit controller for session %s: %s", session_id, e)
+        stop_container(session_id)
         if session:
             shutil.rmtree(os.path.join('output', session_id), ignore_errors=True)
             logger.info("Session ended: %s", session_id)
@@ -305,14 +308,20 @@ class SessionManager:
                     old_controller.exit()
                 except Exception as e:
                     logger.warning("Failed to exit old controller for session %s: %s", session_id, e)
+                stop_container(session_id)
 
-            controller = GdbController()
+            container_name = start_container(session_id, session_output_dir) if SANDBOX_ENABLED else None
+            if SANDBOX_ENABLED and container_name is None:
+                raise RuntimeError("Sandbox container failed to start. Refusing to run unsandboxed.")
+            controller = GdbController(command=['docker', 'exec', '-i', container_name, 'gdb', '--interpreter=mi2']) if container_name else GdbController()
             try:
                 binary_name = safe_name.replace('.cpp', '').replace('.c', '').replace('.exe', '')
-                exe_path = os.path.join('output', session_id, ensure_exe_extension(binary_name))
+                binary_file = ensure_exe_extension(binary_name)
+                exe_path = os.path.join('output', session_id, binary_file)
                 if not os.path.exists(exe_path):
                     raise RuntimeError(f"Binary not found at {exe_path}. Please compile your program first.")
-                controller.write(f"-file-exec-and-symbols {exe_path}", timeout_sec=GDB_TIMEOUT)
+                gdb_path = f'/workspace/{binary_file}' if container_name else exe_path
+                controller.write(f"-file-exec-and-symbols {gdb_path}", timeout_sec=GDB_TIMEOUT)
             except Exception:
                 try:
                     controller.exit()
@@ -367,6 +376,7 @@ class SessionManager:
                 controller.exit()
             except Exception as e:
                 logger.warning("Error exiting GDB for session %s: %s", session_id, e)
+        stop_container(session_id)
 
     def execute(self, session_id, command):
         validate_command(command)
