@@ -5,10 +5,21 @@ services:
       context: ./gdbui_server
     volumes:
       - ./gdbui_server:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - GDBUI_DOCKER=false
     ports:
       - "10000:10000"
     expose:
       - 10000
+
+  sandbox-image:
+    build:
+      dockerfile: sandbox.Dockerfile
+      context: ./gdbui_server/docker
+    image: gdbui-sandbox:latest
+    profiles:
+      - build
 
   webapp:
     build:
