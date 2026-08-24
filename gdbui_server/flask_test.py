@@ -97,6 +97,44 @@ class TestGDBRoutes(TestCase):
         body = self.assert_v2_error_response(response, 400)
         self.assertEqual(body["error"]["code"], "COMPILATION_FAILED")
 
+    @mock.patch("main.SANDBOX_ENABLED", True)
+    @mock.patch("main.start_container", return_value="gdbui-test")
+    @mock.patch("main.subprocess.run")
+    def test_v2_compile_uses_docker_exec_when_sandbox_enabled(self, mock_run, mock_start):
+        mock_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+        payload = {
+            "session_id": self.session_id,
+            "code": 'int main() { return 0; }',
+            "name": "test_program",
+        }
+
+        with mock.patch("builtins.open", mock.mock_open()):
+            response = self.client.post("/v2/compile", data=json.dumps(payload), content_type="application/json")
+        self.assert_v2_success_response(response)
+        mock_start.assert_called_once()
+        args = mock_run.call_args[0][0]
+        self.assertEqual(args[:3], ["docker", "exec", "-i"])
+        self.assertIn("gdbui-test", args)
+        self.assertIn("g++", args)
+        self.assertIn("/workspace/test_program", args)
+        self.assertIn("/workspace/test_program.exe", args)
+
+    @mock.patch("main.SANDBOX_ENABLED", True)
+    @mock.patch("main.start_container", return_value=None)
+    @mock.patch("main.subprocess.run")
+    def test_v2_compile_fails_closed_when_container_start_fails(self, mock_run, mock_start):
+        payload = {
+            "session_id": self.session_id,
+            "code": 'int main() { return 0; }',
+            "name": "test_program",
+        }
+
+        with mock.patch("builtins.open", mock.mock_open()):
+            response = self.client.post("/v2/compile", data=json.dumps(payload), content_type="application/json")
+        body = self.assert_v2_error_response(response, 400)
+        self.assertEqual(body["error"]["code"], "COMPILATION_FAILED")
+        mock_run.assert_not_called()
+
     @mock.patch("main.subprocess.run")
     def test_v2_compile_rejects_missing_payload(self, mock_run):
         response = self.client.post("/v2/compile", content_type="application/json")

@@ -1,6 +1,7 @@
 """Tests for the sandbox module."""
 
 import os
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -88,6 +89,22 @@ class TestSandboxEnabled(unittest.TestCase):
     @patch("sandbox.subprocess.run")
     def test_start_returns_none_on_failure(self, mock_run):
         mock_run.side_effect = Exception("docker daemon not running")
+        result = self.sb.start_container("any", "/tmp")
+        self.assertIsNone(result)
+
+    @patch("sandbox.subprocess.run")
+    def test_start_idempotent_when_name_in_use(self, mock_run):
+        err = subprocess.CalledProcessError(
+            125, ["docker", "run"], stderr=b'Conflict. The container name "/gdbui-550e8400" is already in use'
+        )
+        mock_run.side_effect = err
+        name = self.sb.start_container("550e8400-e29b-41d4-a716", "output/sid")
+        self.assertEqual(name, "gdbui-550e8400")
+
+    @patch("sandbox.subprocess.run")
+    def test_start_returns_none_on_other_calledprocesserror(self, mock_run):
+        err = subprocess.CalledProcessError(125, ["docker", "run"], stderr=b"docker daemon not reachable")
+        mock_run.side_effect = err
         result = self.sb.start_container("any", "/tmp")
         self.assertIsNone(result)
 

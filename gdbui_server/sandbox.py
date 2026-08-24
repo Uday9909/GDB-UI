@@ -71,6 +71,14 @@ def start_container(session_id: str, output_dir: str) -> str | None:
         )
         logger.info("Sandbox started: %s (%s)", name, session_id)
         return name
+    except subprocess.CalledProcessError as e:
+        # Name conflict means the container already exists and is running
+        # (deterministic name + --rm: it only goes away via stop_container).
+        if b"is already in use" in e.stderr or b"Conflict" in e.stderr:
+            logger.info("Sandbox already running: %s", name)
+            return name
+        logger.exception("Failed to start sandbox for session %s", session_id)
+        return None
     except Exception:
         logger.exception("Failed to start sandbox for session %s", session_id)
         return None
